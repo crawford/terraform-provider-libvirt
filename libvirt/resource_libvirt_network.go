@@ -101,6 +101,28 @@ func resourceLibvirtNetwork() *schema.Resource {
 					},
 				},
 			},
+			"dns_host": {
+				Type:     schema.TypeList,
+				Optional: true,
+				ForceNew: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"ip": {
+							Type:     schema.TypeString,
+							Required: true,
+							ForceNew: true,
+						},
+						"hostnames": {
+							Type:     schema.TypeList,
+							Required: true,
+							ForceNew: true,
+							Elem: &schema.Schema{
+								Type: schema.TypeString,
+							},
+						},
+					},
+				},
+			},
 		},
 	}
 }
@@ -247,11 +269,8 @@ func resourceLibvirtNetworkCreate(d *schema.ResourceData, meta interface{}) erro
 			networkDef.IPs = ipsPtrsLst
 		}
 
+		var dnsForwarders []libvirtxml.NetworkDNSForwarder
 		if dnsForwardCount, ok := d.GetOk("dns_forwarder.#"); ok {
-			dns := libvirtxml.NetworkDNS{
-				Forwarders: []libvirtxml.NetworkDNSForwarder{},
-			}
-
 			for i := 0; i < dnsForwardCount.(int); i++ {
 				forward := libvirtxml.NetworkDNSForwarder{}
 				forwardPrefix := fmt.Sprintf("dns_forwarder.%d", i)
@@ -265,7 +284,40 @@ func resourceLibvirtNetworkCreate(d *schema.ResourceData, meta interface{}) erro
 				if domain, ok := d.GetOk(forwardPrefix + ".domain"); ok {
 					forward.Domain = domain.(string)
 				}
-				dns.Forwarders = append(dns.Forwarders, forward)
+				dnsForwarders = append(dnsForwarders, forward)
+			}
+		}
+
+		var dnsHosts []libvirtxml.NetworkDNSHost
+		if dnsHostCount, ok := d.GetOk("dns_host.#"); ok {
+			for i := 0; i < dnsHostCount.(int); i++ {
+				host := libvirtxml.NetworkDNSHost{}
+				hostPrefix := fmt.Sprintf("dns_host.%d", i)
+				if address, ok := d.GetOk(hostPrefix + ".ip"); ok {
+					ip := net.ParseIP(address.(string))
+					if ip == nil {
+						return fmt.Errorf("Could not parse address '%s'", address)
+					}
+					host.IP = ip.String()
+				}
+				if hostnamesCount, ok := d.GetOk(hostPrefix + ".hostnames.#"); ok {
+					for i := 0; i < hostnamesCount.(int); i++ {
+						if hostname, ok := d.GetOk(fmt.Sprintf("%s.hostnames.%d", hostPrefix, i)); ok {
+							host.Hostnames = append(host.Hostnames, libvirtxml.NetworkDNSHostHostname{
+								Hostname: hostname.(string),
+							})
+						}
+					}
+				}
+
+				dnsHosts = append(dnsHosts, host)
+			}
+		}
+
+		if len(dnsForwarders) > 0 || len(dnsHosts) > 0 {
+			dns := libvirtxml.NetworkDNS{
+				Forwarders: dnsForwarders,
+				Host:       dnsHosts,
 			}
 			networkDef.DNS = &dns
 		}

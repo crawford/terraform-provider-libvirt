@@ -38,6 +38,13 @@ resource "libvirt_network" "kube_network" {
   #   address = "my address"
   #   domain = "my domain"
   # }
+
+  # (Optional) one or more DNS host entries.  Both of
+  # "ip" and "hostnames" must be specified.  The format is:
+  # dns_host {
+  #   ip = "my address"
+  #   hostnames = [ "my", "hostnames" ]
+  # }
 }
 ```
 
@@ -76,6 +83,8 @@ The following arguments are supported:
    specify dns_forwarders:
 * `autostart` - (Optional) Set to `true` to start the network on host boot up.
   If not specified `false` is assumed.
+* `dns_host` - (Optional) a DNS host entry block.  You can have one or more of these
+   blocks in your network definition. You must specify both `ip` and `hostnames`.
 
 ```hcl
 resource "libvirt_network" "my_network" {
@@ -102,6 +111,23 @@ resource "libvirt_network" "my_network" {
       domain = "my domain
     }
   ]
+}
+```
+
+An example of round-robin DNS using the `dns_host` argument can be found below.
+`my_host` will resolve to both `my address 0` and `my address 1`:
+
+```hcl
+resource "libvirt_network" "my_network" {
+  ...
+  dns_host {
+    ip = "my address 0"
+    hostname = "my_host"
+  }
+  dns_host {
+    ip = "my address 1"
+    hostname = "my_host"
+  }
 }
 ```
 
