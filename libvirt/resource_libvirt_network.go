@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform/helper/hashcode"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
 	libvirt "github.com/libvirt/libvirt-go"
@@ -108,23 +110,83 @@ func resourceLibvirtNetwork() *schema.Resource {
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"ip": {
-							Type:     schema.TypeString,
-							Required: true,
+							Type: schema.TypeString,
+							// This should be required, but Terraform does validation too early
+							// and therefore doesn't recognize that this is set when assigning from
+							// a rendered dns_host template.
+							Optional: true,
 							ForceNew: true,
 						},
-						"hostnames": {
-							Type:     schema.TypeList,
-							Required: true,
+						"hostname": {
+							Type: schema.TypeString,
+							// This should be required, but Terraform does validation too early
+							// and therefore doesn't recognize that this is set when assigning from
+							// a rendered dns_host template.
+							Optional: true,
 							ForceNew: true,
-							Elem: &schema.Schema{
-								Type: schema.TypeString,
-							},
 						},
 					},
 				},
 			},
 		},
 	}
+}
+
+// a libvirt network DNS host template datasource
+//
+// Datasource example:
+//
+// data "libvirt_network_dns_host_template" "k8smasters" {
+//   count = "${var.master_count}"
+//   ip = "${var.master_ips[count.index]}"
+//   hostname = "master-${count.index}"
+// }
+//
+// resource "libvirt_network" "k8snet" {
+//   ...
+//   dns_host = [ "${flatten(data.libvirt_network_dns_host_template.k8smasters.*.rendered)}" ]
+//   ...
+// }
+//
+func datasourceLibvirtNetworkDNSHostTemplate() *schema.Resource {
+	return &schema.Resource{
+		Read: resourceLibvirtNetworkDNSHostRead,
+		Schema: map[string]*schema.Schema{
+			"ip": {
+				Type:     schema.TypeString,
+				Required: true,
+			},
+			"hostname": {
+				Type:     schema.TypeString,
+				Required: true,
+			},
+			"rendered": {
+				Type: schema.TypeMap,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
+				Computed: true,
+			},
+		},
+	}
+}
+
+func resourceLibvirtNetworkDNSHostRead(d *schema.ResourceData, meta interface{}) error {
+	dns_host := map[string]interface{}{}
+	if address, ok := d.GetOk("ip"); ok {
+		ip := net.ParseIP(address.(string))
+		if ip == nil {
+			return fmt.Errorf("Could not parse address '%s'", address)
+		}
+		dns_host["ip"] = ip.String()
+	}
+	if hostname, ok := d.GetOk("hostname"); ok {
+		dns_host["hostname"] = hostname.(string)
+	}
+	d.Set("rendered", dns_host)
+	d.SetId(strconv.Itoa(hashcode.String(fmt.Sprintf("%v", dns_host))))
+
+	return nil
 }
 
 func resourceLibvirtNetworkExists(d *schema.ResourceData, meta interface{}) (bool, error) {
@@ -288,30 +350,30 @@ func resourceLibvirtNetworkCreate(d *schema.ResourceData, meta interface{}) erro
 			}
 		}
 
-		var dnsHosts []libvirtxml.NetworkDNSHost
+		dnsHostsMap := map[string][]string{}
 		if dnsHostCount, ok := d.GetOk("dns_host.#"); ok {
 			for i := 0; i < dnsHostCount.(int); i++ {
-				host := libvirtxml.NetworkDNSHost{}
 				hostPrefix := fmt.Sprintf("dns_host.%d", i)
-				if address, ok := d.GetOk(hostPrefix + ".ip"); ok {
-					ip := net.ParseIP(address.(string))
-					if ip == nil {
-						return fmt.Errorf("Could not parse address '%s'", address)
-					}
-					host.IP = ip.String()
-				}
-				if hostnamesCount, ok := d.GetOk(hostPrefix + ".hostnames.#"); ok {
-					for i := 0; i < hostnamesCount.(int); i++ {
-						if hostname, ok := d.GetOk(fmt.Sprintf("%s.hostnames.%d", hostPrefix, i)); ok {
-							host.Hostnames = append(host.Hostnames, libvirtxml.NetworkDNSHostHostname{
-								Hostname: hostname.(string),
-							})
-						}
-					}
+
+				address := d.Get(hostPrefix + ".ip").(string)
+				if net.ParseIP(address) == nil {
+					return fmt.Errorf("Could not parse address '%s'", address)
 				}
 
-				dnsHosts = append(dnsHosts, host)
+				dnsHostsMap[address] = append(dnsHostsMap[address], d.Get(hostPrefix+".hostname").(string))
 			}
+		}
+
+		var dnsHosts []libvirtxml.NetworkDNSHost
+		for ip, hostnames := range dnsHostsMap {
+			dnsHostnames := []libvirtxml.NetworkDNSHostHostname{}
+			for _, hostname := range hostnames {
+				dnsHostnames = append(dnsHostnames, libvirtxml.NetworkDNSHostHostname{Hostname: hostname})
+			}
+			dnsHosts = append(dnsHosts, libvirtxml.NetworkDNSHost{
+				IP:        ip,
+				Hostnames: dnsHostnames,
+			})
 		}
 
 		if len(dnsForwarders) > 0 || len(dnsHosts) > 0 {
